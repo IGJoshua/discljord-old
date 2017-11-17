@@ -28,7 +28,8 @@
         interval nil
         result {::ds/shards (vec (for [id (range 0 shard-count)]
                                    {::ds/websocket {::ds/gateway gateway
-                                                    ::ds/hb-interval interval}
+                                                    ::ds/hb-interval interval
+                                                    ::ds/ack? true}
                                     ::ds/shard-id [id shard-count]}))
                 ::ds/shard-count shard-count}]
     result))
@@ -47,7 +48,6 @@
 
 (defn heartbeat
   [bot shard-id]
-  (println "Sending heartbeat!")
   (swap! bot
          #(do (ws/send-msg (-> %
                                ::ds/connection
@@ -120,7 +120,6 @@
           type (get recieved "t")
           data (get recieved "d")
           seq (get recieved "s")]
-      (println (str "\n\n\nMESSAGE RECIEVED\n" recieved))
       (when-not (nil? seq)
         (swap! bot #(assoc-in % [::ds/connection
                                  ::ds/shards
@@ -141,20 +140,20 @@
         11 (swap! bot #(assoc-in % [::ds/connection
                                     ::ds/shards
                                     shard-id
-                                    ::ds/websocket]
-                                 ::ds/ack? true))
+                                    ::ds/websocket
+                                    ::ds/ack?]
+                                 true))
         0 (async/>! (get-in @bot [::ds/event-channel]) {::ds/event-type (event-keys type)
                                                         ::ds/event-data data})
         :else (throw (Exception. "Unknown payload"))))))
 
 (defn connect-socket!
   [bot shard-id]
-  (let [gateway (get-in @bot [::ds/connection ::ds/shards shard-id ::ds/websocket ::ds/gateway])]
-    (println gateway)
-    (ws/connect (str gateway "?v=6&encoding=json")
+  (let [gateway (str (get-in @bot [::ds/connection ::ds/shards shard-id ::ds/websocket ::ds/gateway])
+                     "?v=6&encoding=json")]
+    (ws/connect gateway
        :on-receive (partial proc-message bot shard-id)
        :on-connect (fn [session]
-                     (println "Connected!\n\n\n")
                      (async/go-loop [keep-alive true]
                        (when (and keep-alive (get-in @bot [::ds/connection]))
                          ;; Have we gotten the initial handshake back?
@@ -176,13 +175,12 @@
                              (do (reconnect-socket! bot shard-id)
                                  (recur false))
                              (do (heartbeat bot shard-id)
-                                 (println "heartbeat from async")
-                                 (async/<! (async/timeout @(-> @bot
-                                                               ::ds/connection
-                                                               ::ds/shards
-                                                               (get shard-id)
-                                                               ::ds/websocket
-                                                               ::ds/hb-interval)))
+                                 (async/<! (async/timeout (-> @bot
+                                                              ::ds/connection
+                                                              ::ds/shards
+                                                              (get shard-id)
+                                                              ::ds/websocket
+                                                              ::ds/hb-interval)))
                                  (recur true)))))))
        :on-error #(println "Error: " %)
        :on-close (fn [code reason]
@@ -212,12 +210,12 @@
   "Takes an atom with a bot and modifies it to attempt to reconnect"
   ;; TODO Make this actually do the reconnect thing with reconnect packets, rather than just connect and that's it
   [bot shard-id]
-  (ws/close (-> @bot
-                ::ds/connection
-                ::ds/shards
-                (get shard-id)
-                ::ds/websocket
-                ::ds/ws-client))
+  (ws/close (get-in @bot
+                    [::ds/connection
+                     ::ds/shards
+                     shard-id
+                     ::ds/websocket
+                     ::ds/ws-client]))
   (swap! bot #(assoc-in % [::ds/connection
                            ::ds/shards
                            shard-id
@@ -237,16 +235,17 @@
                                  ::ds/ws-client]
                               (connect-socket! bot shard-id)))
         (Thread/sleep 1000)
-        (ws/send-msg (-> @bot
-                         ::ds/connection
-                         ::ds/shards
-                         (get shard-id)
-                         ::ds/websocket
-                         ::ds/ws-client)
-                     (json/write-str {:op 2, :d {"token" (get-in @bot [::ds/token])
-                                                 "properties" {"$os" "linux"
-                                                               "$browser" "discljord"
-                                                               "$device" "discljord"}
-                                                 "compress" false}}))
+        (when-let [socket (get-in @bot
+                             [::ds/connection
+                              ::ds/shards
+                              shard-id
+                              ::ds/websocket
+                              ::ds/ws-client])]
+                 (ws/send-msg socket
+                              (json/write-str {:op 2, :d {"token" (get-in @bot [::ds/token])
+                                                          "properties" {"$os" "linux"
+                                                                        "$browser" "discljord"
+                                                                        "$device" "discljord"}
+                                                          "compress" false}})))
         nil))
   @bot)
