@@ -40,6 +40,7 @@
 (defn disconnect!
   "Loops through all shards in the given bot, disconnects them, swaps the bot atom to dissoc the connection, and returns the new bot map."
   [bot]
+  (async/>!! (get-in @bot [::ds/event-channel]) {::ds/event-type :disconnect ::ds/event-data {}})
   (doseq [shard-id (range 0 (get-in @bot [::ds/connection ::ds/shard-count]))]
     (when-let [socket (get-in @bot [::ds/connection ::ds/shards shard-id ::ds/websocket ::ds/ws-client])]
       (ws/close socket)))
@@ -147,6 +148,8 @@
                                                         ::ds/event-data data})
         :else (throw (Exception. "Unknown payload"))))))
 
+(declare connect!)
+
 (defn connect-socket!
   [bot shard-id]
   (let [gateway (str (get-in @bot [::ds/connection ::ds/shards shard-id ::ds/websocket ::ds/gateway])
@@ -154,6 +157,18 @@
     (ws/connect gateway
        :on-receive (partial proc-message bot shard-id)
        :on-connect (fn [session]
+                     (async/go-loop []
+                       (let [ready (async/<! (get-in @bot [::ds/event-channel]))]
+                         (if (= :ready (::ds/event-type ready))
+                           (do (async/>! (get-in @bot [::ds/event-channel]) ready)
+                               (swap! bot #(assoc-in % [::ds/connection
+                                                        ::ds/shards
+                                                        shard-id
+                                                        ::ds/websocket
+                                                        ::ds/session-id]
+                                                     (get (::ds/event-data ready) "session_id"))))
+                           (do (async/>! (get-in @bot [::ds/event-channel]) ready)
+                               (recur)))))
                      (async/go-loop [keep-alive true]
                        (when (and keep-alive (get-in @bot [::ds/connection]))
                          ;; Have we gotten the initial handshake back?
@@ -202,13 +217,15 @@
                               (throw (Exception. "Rate limited! Disconnecting!")))
                      4009 (reconnect-socket! bot shard-id) ;; session timeout
                      4010 (do (throw (Exception. "Invalid shard!")))
-                     ;; TODO: Make code to shard and retry
-                     4011 (do (disconnect! bot)
-                              (throw (Exception. "Too small a socket for the shard! Disconnecting!"))))))))
+                     4011 (do (binding [*out* *err*]
+                                (println "Session too big. Disconnecting bot, waiting 10 seconds, and sharding."))
+                              (disconnect! bot)
+                              (Thread/sleep 10000)
+                              (connect! bot)
+                              #_(throw (Exception. "Too small a socket for the shard! Disconnecting!"))))))))
 
 (defn reconnect-socket!
   "Takes an atom with a bot and modifies it to attempt to reconnect"
-  ;; TODO Make this actually do the reconnect thing with reconnect packets, rather than just connect and that's it
   [bot shard-id]
   (ws/close (get-in @bot
                     [::ds/connection
@@ -221,7 +238,26 @@
                            shard-id
                            ::ds/websocket
                            ::ds/ws-client]
-                        (connect-socket! bot shard-id))))
+                        (connect-socket! bot shard-id)))
+  (when-let [socket (get-in @bot
+                            [::ds/connection
+                             ::ds/shards
+                             shard-id
+                             ::ds/websocket
+                             ::ds/ws-client])]
+    (ws/send-msg socket
+                 (json/write-str {:op 6, :d {"token" (get-in @bot [::ds/token])
+                                             "session_id" (get-in @bot [::ds/connection
+                                                                        ::ds/shards
+                                                                        shard-id
+                                                                        ::ds/websocket
+                                                                        ::ds/session-id])
+                                             "seq" (get-in @bot [::ds/connection
+                                                                 ::ds/shards
+                                                                 shard-id
+                                                                 ::ds/websocket
+                                                                 ::ds/last-message
+                                                                 ::ds/seq])}}))))
 
 (defn connect!
   "Takes an atom with a bot in it, and creates and connects a websocket to Discord. This will take about one second extra per suggested shard from Discord. Returns the value of the bot after the changes."

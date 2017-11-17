@@ -2,7 +2,8 @@
   (:require [clojure.spec.alpha :as s]
             [discljord.spec :as ds]
             [discljord.bots :as bots]
-            [discljord.connections :as conn]))
+            [discljord.connections :as conn]
+            [discljord.messaging :as msg]))
 
 (defn connect!
   [bot]
@@ -15,6 +16,10 @@
 (defn create-bot
   [opts]
   (bots/create-bot opts))
+
+(defn message
+  [channel content]
+  (msg/message channel content))
 
 (defn- defcommands-helper
   "Helper function for defcommands. Does all the heavy lifting,

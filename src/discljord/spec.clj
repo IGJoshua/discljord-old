@@ -47,8 +47,9 @@
 
 (s/def ::ack? boolean?)
 
+(s/def ::session-id string?)
 (s/def ::websocket (s/keys :req [::gateway ::hb-interval]
-                           :opt [::ws-client ::last-message ::ack?]))
+                           :opt [::ws-client ::last-message ::ack? ::session-id]))
 
 (s/def ::shard-count number?)
 
