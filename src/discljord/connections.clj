@@ -25,7 +25,7 @@
         body (json/read-str (:body response))
         gateway (get body "url")
         shard-count (get body "shards")
-        interval (atom nil)
+        interval nil
         result {::ds/shards (vec (for [id (range 0 shard-count)]
                                    {::ds/websocket {::ds/gateway gateway
                                                     ::ds/hb-interval interval}
@@ -67,13 +67,7 @@
                            shard-id
                            ::ds/websocket
                            ::ds/ack?]
-                     false)))
-  (async/<! (async/timeout @(-> @bot
-                                ::ds/connection
-                                ::ds/shards
-                                (get shard-id)
-                                ::ds/websocket
-                                ::ds/hb-interval))))
+                        false))))
 
 (declare reconnect-socket!)
 
@@ -156,18 +150,20 @@
 (defn connect-socket!
   [bot shard-id]
   (let [gateway (get-in @bot [::ds/connection ::ds/shards shard-id ::ds/websocket ::ds/gateway])]
-    (ws/connect gateway
+    (println gateway)
+    (ws/connect (str gateway "?v=6&encoding=json")
        :on-receive (partial proc-message bot shard-id)
        :on-connect (fn [session]
+                     (println "Connected!\n\n\n")
                      (async/go-loop [keep-alive true]
                        (when (and keep-alive (get-in @bot [::ds/connection]))
                          ;; Have we gotten the initial handshake back?
-                         (if (nil? @(-> @bot
-                                        ::ds/connection
-                                        ::ds/shards
-                                        (get shard-id)
-                                        ::ds/websocket
-                                        ::ds/hb-interval))
+                         (if (nil? (-> @bot
+                                       ::ds/connection
+                                       ::ds/shards
+                                       (get shard-id)
+                                       ::ds/websocket
+                                       ::ds/hb-interval))
                            ;; Wait till we get the initial handshake back
                            (do (async/<! (async/timeout 100))
                                (recur true))
@@ -181,6 +177,12 @@
                                  (recur false))
                              (do (heartbeat bot shard-id)
                                  (println "heartbeat from async")
+                                 (async/<! (async/timeout @(-> @bot
+                                                               ::ds/connection
+                                                               ::ds/shards
+                                                               (get shard-id)
+                                                               ::ds/websocket
+                                                               ::ds/hb-interval)))
                                  (recur true)))))))
        :on-error #(println "Error: " %)
        :on-close (fn [code reason]
